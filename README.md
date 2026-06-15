@@ -16,6 +16,19 @@
 
 <kbd>[![Ink - Shadcn UI Blog Landing Page Template Demo Screenshot](https://cdn.shadcnstudio.com/ss-assets/landing-page/template-page/template-detail-page/landing-page/ink/og-image.png)](https://shadcnstudio.com/templates/ink-blog-template-free)</kbd>
 
+## ⭐ Quick Start — the 3 commands you usually need
+
+```bash
+nvm use 22      # 1. turn on the right Node version (do this FIRST, every time)
+npm install     # 2. only when something broke, or you just downloaded the project
+npm run dev     # 3. start the website so you can see it
+```
+
+When you're done looking, press **Ctrl + C** to stop it.
+
+> Use **npm** (not pnpm or bun) and **Node 22+**. More help:
+> [Local Development](#local-development-) · [setup & recovery notes](docs/setup-and-recovery-notes.md) · [add a Cloudinary image](docs/cloudinary-picture-workflow.md)
+
 ## Introduction 🚀
 
 Ink is a Free Shadcn UI Blog Landing Page template to publish articles, insights, and categories with a clean, fast, and readable layout. Designed for modern content creators, Ink delivers a responsive, SEO-friendly experience with polished visuals, smooth animations, and easy customization.
