@@ -67,12 +67,17 @@ export default defineConfig({
   },
   vite: {
     plugins: [tailwindcss()],
+    ssr: {
+      // Prevents Vite from parsing internal relative paths in the package during SSR/Build
+      noExternal: ['astro-cloudinary', '@radix-ui/*']
+    },
+    optimizeDeps: {
+      // Prevents Vite from pre-bundling the package during static entrypoint building
+      exclude: ['astro-cloudinary']
+    },
     build: {
       cssMinify: true,
       minify: 'esbuild'
-    },
-    ssr: {
-      noExternal: ['@radix-ui/*']
     }
   },
   markdown: {

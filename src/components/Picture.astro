@@ -1,141 +1,131 @@
 ---
-import { getImage, imageConfig, type LocalImageProps, type RemoteImageProps } from 'astro:assets';
-import * as mime from 'mrmime';
-import { isESMImportedImage, resolveSrc } from '../dist/assets/utils/imageKind.js';
-import { AstroError, AstroErrorData } from '../dist/core/errors/index.js';
-import type {
-	GetImageResult,
-	ImageOutputFormat,
-	UnresolvedImageTransform,
-} from '../dist/types/public/index.js';
-import type { HTMLAttributes } from '../types.js';
+import type { HTMLAttributes } from "astro/types";
+import {
+  getCldImageUrl,
+  type GetCldImageUrlOptions,
+} from "astro-cloudinary/helpers";
 
-export type Props = (LocalImageProps | RemoteImageProps) & {
-	formats?: ImageOutputFormat[];
-	fallbackFormat?: ImageOutputFormat;
-	pictureAttributes?: HTMLAttributes<'picture'>;
+type CloudinaryFormat = "jxl" | "avif" | "webp";
+type CloudinaryBreakpoint =
+  | number
+  | {
+      width: number;
+    };
+type CloudinaryBreakpointSet =
+  | CloudinaryBreakpoint[]
+  | {
+      breakpoints: CloudinaryBreakpoint[];
+    };
+type ImageAttrs = Omit<
+  HTMLAttributes<"img">,
+  "src" | "srcset" | "alt" | "width" | "height" | "sizes"
+>;
+type Transformations = Omit<
+  GetCldImageUrlOptions,
+  "src" | "width" | "height" | "format"
+>;
+
+type Props = {
+  src: string;
+  alt: string;
+  width: number;
+  height: number;
+  sizes: string;
+  breakpoints: CloudinaryBreakpointSet;
+  pictureClass?: string;
+  transformations?: Transformations;
+} & ImageAttrs;
+
+const FORMAT_ORDER: CloudinaryFormat[] = ["jxl", "avif", "webp"];
+const MIME_TYPES: Record<CloudinaryFormat, string> = {
+  jxl: "image/jxl",
+  avif: "image/avif",
+  webp: "image/webp",
 };
 
-const defaultFormats = ['webp'] as const;
-const defaultFallbackFormat = 'png' as const;
+const {
+  src,
+  alt,
+  width,
+  height,
+  sizes,
+  breakpoints,
+  pictureClass,
+  transformations = {},
+  loading = "lazy",
+  decoding = "async",
+  ...attrs
+} = Astro.props;
 
-// Certain formats don't want PNG fallbacks:
-// - GIF will typically want to stay as a gif, either for animation or for the lower amount of colors
-// - SVGs can't be converted to raster formats in most cases
-// - JPEGs compress photographs and high-noise images better than PNG in most cases
-// For those, we'll use the original format as the fallback instead.
-const specialFormatsFallback = ['gif', 'svg', 'jpg', 'jpeg'] as const;
+const getBreakpointWidth = (breakpoint: CloudinaryBreakpoint) =>
+  typeof breakpoint === "number" ? breakpoint : breakpoint.width;
 
-const { formats = defaultFormats, pictureAttributes = {}, fallbackFormat, ...props } = Astro.props;
+// 1. First, make sure something was actually passed in
+  if (!breakpoints) {
+    throw new Error(
+      `Cloudinary breakpoints are missing or undefined for src: "${src}". Please verify this key exists in your JSON file.`
+    );
+  }
 
-if (props.alt === undefined || props.alt === null) {
-	throw new AstroError(AstroErrorData.ImageMissingAlt);
+  // 2. Safely extract the array whether it's a direct array or wrapped in an object
+  const breakpointList = Array.isArray(breakpoints)
+    ? breakpoints
+    : ('breakpoints' in breakpoints ? breakpoints.breakpoints : undefined);
+
+  if (!breakpointList) {
+    throw new Error(`Could not find a valid array of breakpoints for src: "${src}".`);
+  }
+const normalizedBreakpoints = [
+  ...new Set(
+    breakpointList
+      .map(getBreakpointWidth)
+      .filter(breakpoint => Number.isFinite(breakpoint) && breakpoint > 0)
+      .concat(width)
+  ),
+].sort((a, b) => a - b);
+
+if (normalizedBreakpoints.length === 0) {
+  throw new Error(
+    `Cloudinary breakpoints are required for ${src}. Run "npm run cloudinary:breakpoints ${src}" and pass the generated widths.`
+  );
 }
 
-// Picture attribute inherit scoped styles from class and attributes
-const scopedStyleClass = props.class?.match(/\bastro-\w{8}\b/)?.[0];
-if (scopedStyleClass) {
-	if (pictureAttributes.class) {
-		pictureAttributes.class = `${pictureAttributes.class} ${scopedStyleClass}`;
-	} else {
-		pictureAttributes.class = scopedStyleClass;
-	}
-}
+const createUrl = (format: CloudinaryFormat, breakpoint: number) =>
+  getCldImageUrl({
+    crop: "limit",
+    quality: "auto",
+    ...transformations,
+    src,
+    width: breakpoint,
+    format,
+  });
 
-const layout = props.layout ?? imageConfig.layout ?? 'none';
-const useResponsive = layout !== 'none';
+const createSrcSet = (format: CloudinaryFormat) =>
+  normalizedBreakpoints
+    .map(breakpoint => `${createUrl(format, breakpoint)} ${breakpoint}w`)
+    .join(", ");
 
-if (useResponsive) {
-	props.layout ??= imageConfig.layout;
-	props.fit ??= imageConfig.objectFit ?? 'cover';
-	props.position ??= imageConfig.objectPosition ?? 'center';
-} else if (imageConfig.objectFit || imageConfig.objectPosition) {
-	props.fit ??= imageConfig.objectFit;
-	props.position ??= imageConfig.objectPosition;
-}
-
-for (const key in props) {
-	if (key.startsWith('data-astro-cid')) {
-		// @ts-expect-error This is for island props so they're not properly typed
-		pictureAttributes[key] = props[key];
-	}
-}
-
-const originalSrc = await resolveSrc(props.src);
-const optimizedImages: GetImageResult[] = await Promise.all(
-	formats.map(
-		async (format) =>
-			await getImage({
-				...props,
-				src: originalSrc,
-				format: format,
-				widths: props.widths,
-				densities: props.densities,
-			} as UnresolvedImageTransform),
-	),
-);
-
-// Clone the `src` object if it's an ESM import so that we don't refer to any properties of the original object
-// Causing our generate step to think the image is used outside of the image optimization pipeline
-const clonedSrc = isESMImportedImage(originalSrc)
-	? // @ts-expect-error - clone is a private, hidden prop
-		(originalSrc.clone ?? originalSrc)
-	: originalSrc;
-
-let resultFallbackFormat = fallbackFormat ?? defaultFallbackFormat;
-if (
-	!fallbackFormat &&
-	isESMImportedImage(clonedSrc) &&
-	(specialFormatsFallback as ReadonlyArray<string>).includes(clonedSrc.format)
-) {
-	resultFallbackFormat = clonedSrc.format;
-}
-
-const fallbackImage = await getImage({
-	...props,
-	format: resultFallbackFormat,
-	widths: props.widths,
-	densities: props.densities,
-} as UnresolvedImageTransform);
-
-const imgAdditionalAttributes: HTMLAttributes<'img'> = {};
-const sourceAdditionalAttributes: HTMLAttributes<'source'> = {};
-
-// Propagate the `sizes` attribute to the `source` elements
-if (props.sizes) {
-	sourceAdditionalAttributes.sizes = props.sizes;
-}
-
-if (fallbackImage.srcSet.values.length > 0) {
-	imgAdditionalAttributes.srcset = fallbackImage.srcSet.attribute;
-}
-
-if (import.meta.env.DEV) {
-	imgAdditionalAttributes['data-image-component'] = 'true';
-}
-
-const { class: className, ...attributes } = {
-	...imgAdditionalAttributes,
-	...fallbackImage.attributes,
-};
+const fallbackSrc = createUrl("webp", width);
 ---
 
-<picture {...pictureAttributes}>
-	{
-		Object.entries(optimizedImages).map(([_, image]) => {
-			const srcsetAttribute =
-				props.densities || (!props.densities && !props.widths && !useResponsive)
-					? `${image.src}${image.srcSet.values.length > 0 ? ', ' + image.srcSet.attribute : ''}`
-					: image.srcSet.attribute;
-			return (
-				<source
-					srcset={srcsetAttribute}
-					type={mime.lookup(image.options.format ?? image.src) ?? `image/${image.options.format}`}
-					{...sourceAdditionalAttributes}
-				/>
-			);
-		})
-	}
-	{/* Applying class outside of the spread prevents it from applying unnecessary astro-* classes */}
-	<img src={fallbackImage.src} {...attributes} class={className} />
+<picture class={pictureClass}>
+  {
+    FORMAT_ORDER.map(format => (
+      <source
+        type={MIME_TYPES[format]}
+        sizes={sizes}
+        srcset={createSrcSet(format)}
+      />
+    ))
+  }
+  <img
+    {...attrs}
+    src={fallbackSrc}
+    alt={alt}
+    width={width}
+    height={height}
+    sizes={sizes}
+    loading={loading}
+    decoding={decoding}
+  />
 </picture>

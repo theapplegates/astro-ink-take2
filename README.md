@@ -81,6 +81,7 @@ Ink is a Free Shadcn UI Blog Landing Page template to publish articles, insights
 - [Why should I use shadcn/studio? 💡](#why-should-i-use-shadcnstudio-)
 - [This is where shadcn/studio shines ✨](#this-is-where-shadcnstudio-shines-)
 - [Features ✨](#features-)
+- [Local Development 🛠️](#local-development-)
 - [Documentation 📚](#documentation-)
 - [Community 🤝](#community-)
 - [Credits 🤘](#credits-)
@@ -133,6 +134,37 @@ An open-source & premium collection of copy-and-paste shadcn components, blocks,
 4. **Tailwind v4 Compatibility:** Effortlessly use Tailwind v4, supporting OKLCH, HSL, RGB & HEX color formats.
 5. **Stunning Theme Starters:** Kick off with gorgeous pre-built themes and customize light or dark modes in a breeze.
 6. **Hold to Save Theme:** Preserve your custom themes with a quick hold, making them easy to reuse or share later.
+
+## Local Development 🛠️
+
+> [!IMPORTANT]
+> Use **npm** (not pnpm/bun) and **Node 22+**. Astro 6 refuses to run on Node 20,
+> and `astro-cloudinary`'s peer ranges only resolve cleanly with npm (the repo's
+> `.npmrc` sets `legacy-peer-deps=true`).
+
+```bash
+nvm use 22        # this project requires Node >=22.12
+npm install
+npm run dev       # local dev server
+npm run build     # production build
+npm run preview   # preview the production build
+```
+
+### Cloudinary `<Picture>` images
+
+Blog images are served by Cloudinary in JXL → AVIF → WebP (no JPEG fallback). To
+add one: drop the file in `src/assets/images/`, generate breakpoints, then
+reference the **no-extension public ID** in your `.mdx`:
+
+```bash
+npm run cloudinary:breakpoints -- src/assets/images/my-photo.jpg
+```
+
+```mdx
+<Picture src="assets/images/my-photo" breakpoints={breakpoints["assets/images/my-photo"]} ... />
+```
+
+📖 Full guide: [docs/cloudinary-picture-workflow.md](docs/cloudinary-picture-workflow.md)
 
 ## Documentation 📚
 
