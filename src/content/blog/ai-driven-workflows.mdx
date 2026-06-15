@@ -13,19 +13,17 @@ readTime: 6
 featured: true
 ---
 
-import Picture from "@/components/Picture.astro";
-import breakpoints from "@/data/cloudinary-breakpoints.json";
+import Picture from '../../components/Picture.astro'
+import breakpoints from '../../data/cloudinary-breakpoints.json'
 
 <Picture
-  src="assets/images/249E6E29-5816-48FA-8DAE-0D01F8F184FE"
-  alt="Description here."
+  src='assets/images/G700'
+  breakpoints={breakpoints['assets/images/G700']}
+  alt='AI-powered development workflow illustration'
   width={2000}
-  height={1500}
-  sizes="(min-width: 768px) 720px, 100vw"
-  breakpoints={breakpoints["assets/images/249E6E29-5816-48FA-8DAE-0D01F8F184FE"]}
-  pictureClass="responsive-picture"
+  height={1125}
+  sizes='(min-width: 1024px) 960px, 100vw'
 />
-
 
 ## AI-Powered Development Workflows
 
