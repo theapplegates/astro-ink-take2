@@ -1,113 +1,305 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, relative, resolve } from "node:path";
-import { v2 as cloudinary } from "cloudinary";
+#!/usr/bin/env node
+/**
+ * Upload an image to Cloudinary, request responsive breakpoints, merge the
+ * resulting widths into src/data/cloudinary-breakpoints.json, and print a
+ * ready-to-paste <Picture> snippet (intrinsic width/height pulled from the
+ * upload response) plus its import line to stdout.
+ *
+ * Usage:
+ *   npm run cloudinary:breakpoints -- src/assets/images/my-photo.jpg
+ *   npm run cloudinary:breakpoints -- src/assets/images/my-photo.jpg --sizes="100vw"
+ *
+ * With no --devices / --sizes flag the script shows device checkboxes
+ * (Desktop / Laptop / Tablet / Phone) and emits an art-direction `devices`
+ * string (per-device crops + a derived `sizes`). Press Enter to include all,
+ * or type a custom sizes string for simple responsive mode. --devices="..." or
+ * --sizes="..." skips the prompt. In a non-interactive shell all devices are
+ * used. These only affect the printed snippet, not the upload.
+ *
+ * The Cloudinary public ID is derived from the file path by dropping the
+ * leading "src/" segment and the file extension, e.g.
+ *   src/assets/images/my-photo.jpg -> assets/images/my-photo
+ *
+ * Credentials are read from .env via Node's --env-file-if-exists flag (see
+ * package.json), or from the surrounding process environment. The build does
+ * NOT need the API key/secret -- only this upload script does.
+ */
+import { createRequire } from "node:module";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { dirname, extname, resolve, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+import * as readline from "node:readline/promises";
+import { stdin, stdout } from "node:process";
 
-const imageRefs = process.argv.slice(2).filter(Boolean);
-const outputPath = resolve("src/data/cloudinary-breakpoints.json");
+const require = createRequire(import.meta.url);
+const cloudinary = require("cloudinary").v2;
 
-const cloudName =
-  process.env.CLOUDINARY_CLOUD_NAME || process.env.PUBLIC_CLOUDINARY_CLOUD_NAME;
-const apiKey = process.env.CLOUDINARY_API_KEY;
-const apiSecret = process.env.CLOUDINARY_API_SECRET;
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const BREAKPOINTS_FILE = resolve(ROOT, "src/data/cloudinary-breakpoints.json");
 
-if (!imageRefs.length) {
-  console.error(
-    "Usage: npm run cloudinary:breakpoints -- <cloudinary-public-id-or-local-file> [...]"
-  );
-  process.exit(1);
+/**
+ * Device-based art-direction presets. Each device has a viewport floor
+ * (minWidth), the portion of the viewport the image occupies (vw -> sizes),
+ * and a crop aspect ratio. minWidth 0 is the smallest device and becomes the
+ * <img> fallback crop.
+ */
+const DEVICE_PRESETS = [
+  { key: "desktop", label: "Desktop  >1200px",  minWidth: 1200, vw: 40,  aspectRatio: "original" },
+  { key: "laptop",  label: "Laptop   992-1199", minWidth: 992,  vw: 60,  aspectRatio: "16:9" },
+  { key: "tablet",  label: "Tablet   768-991",  minWidth: 768,  vw: 70,  aspectRatio: "4:3" },
+  { key: "phone",   label: "Phone    <768",     minWidth: 0,    vw: 100, aspectRatio: "1:1" },
+];
+
+function parseArgs(argv) {
+  let filePath = null;
+  let sizesArg = null;
+  let devicesArg = null;
+  for (const arg of argv.slice(2)) {
+    if (arg === "--") continue;
+    if (arg.startsWith("--sizes=")) {
+      sizesArg = arg.slice("--sizes=".length);
+    } else if (arg.startsWith("--devices=")) {
+      devicesArg = arg.slice("--devices=".length);
+    } else if (!filePath) {
+      filePath = arg;
+    }
+  }
+  return { filePath, sizesArg, devicesArg };
 }
 
-if (!cloudName || !apiKey || !apiSecret) {
-  console.error(
-    "Missing Cloudinary credentials. Set CLOUDINARY_CLOUD_NAME or PUBLIC_CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET."
-  );
-  process.exit(1);
+/** `sizes` string from a device selection (largest viewport first). */
+function buildSizes(selected) {
+  const sorted = [...selected].sort((a, b) => a.minWidth - b.minWidth);
+  const smallest = sorted[0];
+  const rest = sorted.slice(1).sort((a, b) => b.minWidth - a.minWidth);
+  const clauses = rest.map((d) => `(min-width: ${d.minWidth}px) ${d.vw}vw`);
+  return [...clauses, `${smallest.vw}vw`].join(", ");
 }
 
-cloudinary.config({
-  cloud_name: cloudName,
-  api_key: apiKey,
-  api_secret: apiSecret,
-  secure: true,
-});
+/** Compact `devices` string for the <Picture> prop: "minWidth|vw|aspectRatio,...". */
+function buildDevicesString(selected) {
+  return selected.map((d) => `${d.minWidth}|${d.vw}|${d.aspectRatio}`).join(",");
+}
 
-const breakpointRequest = {
-  create_derived: true,
-  bytes_step: Number(process.env.CLOUDINARY_BREAKPOINT_BYTES_STEP || 20000),
-  min_width: Number(process.env.CLOUDINARY_BREAKPOINT_MIN_WIDTH || 200),
-  max_width: Number(process.env.CLOUDINARY_BREAKPOINT_MAX_WIDTH || 2000),
-  max_images: Number(process.env.CLOUDINARY_BREAKPOINT_MAX_IMAGES || 10),
-};
+/** Parse a compact "minWidth|vw|aspectRatio,..." string into device specs. */
+function parseDevicesString(input) {
+  return input
+    .split(",")
+    .map((part) => {
+      const seg = part.trim().split("|");
+      return {
+        minWidth: Number(seg[0]),
+        vw: Number(seg[1]),
+        aspectRatio: (seg[2] ?? "").trim() || "original",
+      };
+    })
+    .filter(
+      (d) =>
+        Number.isFinite(d.minWidth) &&
+        d.minWidth >= 0 &&
+        Number.isFinite(d.vw) &&
+        d.vw > 0
+    );
+}
 
-const readExistingBreakpoints = async () => {
+/**
+ * Returns either { mode: "art", devices } (art direction) or
+ * { mode: "sizes", sizes } (simple responsive). --devices / --sizes skip the
+ * prompt; a non-numeric custom answer becomes a plain sizes string.
+ */
+async function chooseDevices(sizesArg, devicesArg) {
+  if (devicesArg) {
+    const parsed = parseDevicesString(devicesArg);
+    if (parsed.length > 0) return { mode: "art", devices: parsed };
+  }
+  if (sizesArg) return { mode: "sizes", sizes: sizesArg };
+
+  console.log("\nArt direction (check the device ranges to include):");
+  DEVICE_PRESETS.forEach((d, i) => {
+    console.log(`  [x] ${i + 1}) ${d.label}   ${d.aspectRatio}   ${d.vw}vw`);
+  });
+
+  if (!stdin.isTTY) return { mode: "art", devices: DEVICE_PRESETS };
+
+  const rl = readline.createInterface({ input: stdin, output: stdout });
+  let answer;
   try {
-    return JSON.parse(await readFile(outputPath, "utf8"));
-  } catch (error) {
-    if (error?.code === "ENOENT") return {};
-    throw error;
+    answer = await rl.question(
+      "Enter numbers to include, comma-separated (Enter = all, or type a custom sizes): "
+    );
+  } finally {
+    rl.close();
   }
-};
+  const trimmed = answer.trim();
+  if (!trimmed) return { mode: "art", devices: DEVICE_PRESETS };
 
-const getWidths = result =>
-  result.responsive_breakpoints?.[0]?.breakpoints
-    ?.map(breakpoint => breakpoint.width)
-    .filter(width => Number.isFinite(width))
-    .sort((a, b) => a - b);
+  const nums = trimmed.split(",").map((t) => t.trim()).filter(Boolean);
+  if (nums.length > 0 && nums.every((n) => /^\d+$/.test(n))) {
+    const selected = [];
+    for (const n of nums) {
+      const idx = Number(n) - 1;
+      if (idx >= 0 && idx < DEVICE_PRESETS.length) {
+        const d = DEVICE_PRESETS[idx];
+        if (!selected.includes(d)) selected.push(d);
+      }
+    }
+    if (selected.length > 0) return { mode: "art", devices: selected };
+  }
+  // Not a number list -> treat as a custom sizes string (simple responsive).
+  return { mode: "sizes", sizes: trimmed };
+}
 
-const isLocalFile = async imageRef => {
+/** src/assets/images/my-photo.jpg -> assets/images/my-photo */
+function derivePublicId(filePath) {
+  const rel = relative(ROOT, resolve(ROOT, filePath)).replace(/\\/g, "/");
+  const withoutSrc = rel.startsWith("src/") ? rel.slice(4) : rel;
+  const ext = extname(withoutSrc);
+  return ext ? withoutSrc.slice(0, -ext.length) : withoutSrc;
+}
+
+async function readBreakpoints() {
+  if (!existsSync(BREAKPOINTS_FILE)) return {};
   try {
-    return (await stat(resolve(imageRef))).isFile();
-  } catch {
-    return false;
+    return JSON.parse(await readFile(BREAKPOINTS_FILE, "utf8"));
+  } catch (err) {
+    throw new Error(`Could not parse ${BREAKPOINTS_FILE}: ${err.message}`);
   }
-};
+}
 
-const getPublicIdFromPath = imagePath => {
-  const absolutePath = resolve(imagePath);
-  const relativeToProject = relative(process.cwd(), absolutePath);
-  const withoutExtension = relativeToProject.slice(
-    0,
-    -extname(relativeToProject).length
-  );
+async function writeBreakpoints(data) {
+  await mkdir(dirname(BREAKPOINTS_FILE), { recursive: true });
+  await writeFile(BREAKPOINTS_FILE, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
 
-  if (!withoutExtension.startsWith("..")) {
-    return withoutExtension.replace(/^src\/assets\/images\//, "assets/images/");
-  }
-
-  return basename(imagePath, extname(imagePath));
-};
-
-const breakpointsByPublicId = await readExistingBreakpoints();
-
-for (const imageRef of imageRefs) {
-  const localFile = await isLocalFile(imageRef);
-  const publicId = localFile ? getPublicIdFromPath(imageRef) : imageRef;
-  const result = localFile
-    ? await cloudinary.uploader.upload(resolve(imageRef), {
-        public_id: publicId,
-        overwrite: true,
-        resource_type: "image",
-        responsive_breakpoints: [breakpointRequest],
-      })
-    : await cloudinary.uploader.explicit(publicId, {
-        type: "upload",
-        resource_type: "image",
-        responsive_breakpoints: [breakpointRequest],
-      });
-  const widths = getWidths(result);
-
-  if (!widths?.length) {
-    throw new Error(`Cloudinary did not return breakpoints for ${imageRef}`);
+async function main() {
+  const { filePath, sizesArg, devicesArg } = parseArgs(process.argv);
+  if (!filePath) {
+    console.error(
+      "Usage: npm run cloudinary:breakpoints -- <path-to-image> [--devices=\"...\"] [--sizes=\"...\"]"
+    );
+    process.exit(1);
   }
 
-  breakpointsByPublicId[publicId] = widths;
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  const apiKey = process.env.CLOUDINARY_API_KEY;
+  const apiSecret = process.env.CLOUDINARY_API_SECRET;
+
+  if (!cloudName || !apiKey || !apiSecret) {
+    console.error(
+      "Missing Cloudinary credentials. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET in .env."
+    );
+    process.exit(1);
+  }
+
+  const absPath = resolve(ROOT, filePath);
+  if (!existsSync(absPath)) {
+    console.error(`Image not found: ${absPath}`);
+    process.exit(1);
+  }
+
+  const publicId = derivePublicId(filePath);
+
+  cloudinary.config({ cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret });
+
+  console.log(`Uploading "${absPath}" as public_id "${publicId}"...`);
+
+  const result = await cloudinary.uploader.upload(absPath, {
+    public_id: publicId,
+    unique_filename: false,
+    overwrite: true,
+    resource_type: "image",
+    responsive_breakpoints: [
+      {
+        create_derived: false,
+        breakpoints: {
+          min_width: 200,
+          max_width: 2000,
+          max_images: 10,
+          auto_optimal_breakpoints: true,
+        },
+      },
+    ],
+  });
+
+  const widths =
+    result.responsive_breakpoints?.[0]?.breakpoints?.map((bp) => bp.width) ?? [];
+
+  if (widths.length === 0) {
+    console.error("Cloudinary returned no breakpoints. Full response:");
+    console.error(JSON.stringify(result, null, 2));
+    process.exit(1);
+  }
+
+  const sorted = [...new Set(widths)].sort((a, b) => a - b);
+
+  const data = await readBreakpoints();
+  data[publicId] = sorted;
+  await writeBreakpoints(data);
+
   console.log(
-    `${publicId}${localFile ? ` (uploaded from ${imageRef})` : ""}: ${widths.join(", ")}`
+    `Wrote ${sorted.length} breakpoints for "${publicId}" to ${relative(ROOT, BREAKPOINTS_FILE)}`
   );
+  console.log(sorted.join(", "));
+
+  // Intrinsic dimensions come from the upload response. The Picture.astro
+  // component reads src/alt/width/height/breakpoints plus either `devices`
+  // (art direction: per-device crops via <source media>) or `sizes` (simple
+  // responsive). It rejects an empty alt, so replace the alt text before
+  // publishing.
+  const intrinsicWidth = result.width;
+  const intrinsicHeight = result.height;
+  const choice = await chooseDevices(sizesArg, devicesArg);
+  // Import path is relative to a typical post at src/content/blog/<slug>/index.mdx.
+  const importLine = `import Picture from "../../../components/Picture.astro";`;
+
+  let snippet;
+  if (choice.mode === "art") {
+    const devicesStr = buildDevicesString(choice.devices);
+    const sizesForReference = buildSizes(choice.devices);
+    snippet = [
+      `<Picture`,
+      `  src="${publicId}"`,
+      `  alt="TODO: describe this image"`,
+      `  width="${intrinsicWidth}"`,
+      `  height="${intrinsicHeight}"`,
+      `  devices="${devicesStr}"`,
+      `  breakpoints="${sorted.join(", ")}"`,
+      `  picture-class="responsive-picture"`,
+      `/>`,
+    ].join("\n");
+    console.log(`sizes (derived): ${sizesForReference}`);
+    console.log(`devices: ${devicesStr}`);
+  } else {
+    snippet = [
+      `<Picture`,
+      `  src="${publicId}"`,
+      `  alt="TODO: describe this image"`,
+      `  width="${intrinsicWidth}"`,
+      `  height="${intrinsicHeight}"`,
+      `  sizes="${choice.sizes}"`,
+      `  breakpoints="${sorted.join(", ")}"`,
+      `  picture-class="responsive-picture"`,
+      `/>`,
+    ].join("\n");
+    console.log(`sizes: ${choice.sizes}`);
+  }
+
+  console.log("\nPaste this into your .mdx post (replace the alt text).");
+  console.log("Put the import once at the top of the file, after the frontmatter;");
+  console.log("then place the <Picture> tag where the image should appear:\n");
+  console.log(importLine);
+  console.log("");
+  console.log(snippet);
+  console.log("");
+  console.log(
+    "Note: the import path is relative to src/content/blog/<slug>/index.mdx;"
+  );
+  console.log("adjust the ../ count if your post lives at a different depth.");
+  console.log("");
 }
 
-await mkdir(dirname(outputPath), { recursive: true });
-await writeFile(
-  outputPath,
-  `${JSON.stringify(breakpointsByPublicId, null, 2)}\n`
-);
+main().catch((err) => {
+  console.error(err?.message || err);
+  process.exit(1);
+});
