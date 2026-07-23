@@ -35,9 +35,12 @@
     "cloudinary": "^2.10.0",
     "clsx": "2.1.1",
     "lucide-react": "1.16.0",
+    "node-addon-api": "^8.9.0",
+    "node-gyp": "^13.0.1",
     "radix-ui": "1.4.3",
     "react": "19.2.6",
     "react-dom": "19.2.6",
+    "sharp": "^0.35.3",
     "sqlite": "^5.1.1",
     "tailwind-merge": "3.6.0",
     "tailwindcss": "4.3.0",
@@ -63,5 +66,10 @@
     "typescript-eslint": "8.60.0",
     "unplugin-icons": "^23.0.1"
   },
-  "allowScripts": {}
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "esbuild@0.27.7": true,
+    "fsevents@2.3.3": true,
+    "msw@2.14.6": true
+  }
 }
