@@ -88,6 +88,115 @@ fallback). It is NOT Astro's built-in `<Picture>`. The current file in the repo
 is the correct version — copy it from git history (`git show 77573cc:src/components/Picture.astro`)
 if needed.
 
+---
+import type { HTMLAttributes } from "astro/types";
+import {
+  getCldImageUrl,
+  type GetCldImageUrlOptions,
+} from "astro-cloudinary/helpers";
+
+type CloudinaryFormat = "jxl" | "avif" | "webp";
+type CloudinaryBreakpoint =
+  | number
+  | {
+      width: number;
+    };
+type CloudinaryBreakpointSet =
+  | CloudinaryBreakpoint[]
+  | {
+      breakpoints: CloudinaryBreakpoint[];
+    };
+type ImageAttrs = Omit<
+  HTMLAttributes<"img">,
+  "src" | "srcset" | "alt" | "width" | "height" | "sizes"
+> ;
+type Transformations = Omit<
+  GetCldImageUrlOptions,
+  "src" | "width" | "height" | "format"
+> ;
+
+type Props = {
+  src: string;
+  alt: string;
+  width: number;
+  height: number;
+  sizes: string;
+  breakpoints: CloudinaryBreakpointSet;
+  pictureClass?: string;
+  transformations?: Transformations;
+} & ImageAttrs;
+
+const FORMAT_ORDER: CloudinaryFormat[] = ["jxl", "avif", "webp"];
+const MIME_TYPES: Record<CloudinaryFormat, string> = {
+  jxl: "image/jxl",
+  avif: "image/avif",
+  webp: "image/webp",
+};
+
+const {
+  src,
+  alt,
+  width,
+  height,
+  sizes,
+
+- [ ] 
+Picture.astro from commit
+git show 77573cc:src/components/Picture.astro 
+---
+import type { HTMLAttributes } from "astro/types";
+import {
+  getCldImageUrl,
+  type GetCldImageUrlOptions,
+} from "astro-cloudinary/helpers";
+
+type CloudinaryFormat = "jxl" | "avif" | "webp";
+type CloudinaryBreakpoint =
+  | number
+  | {
+      width: number;
+    };
+type CloudinaryBreakpointSet =
+  | CloudinaryBreakpoint[]
+  | {
+      breakpoints: CloudinaryBreakpoint[];
+    };
+type ImageAttrs = Omit<
+  HTMLAttributes<"img">,
+  "src" | "srcset" | "alt" | "width" | "height" | "sizes"
+> ;
+type Transformations = Omit<
+  GetCldImageUrlOptions,
+  "src" | "width" | "height" | "format"
+> ;
+
+type Props = {
+  src: string;
+  alt: string;
+  width: number;
+  height: number;
+  sizes: string;
+  breakpoints: CloudinaryBreakpointSet;
+  pictureClass?: string;
+  transformations?: Transformations;
+} & ImageAttrs;
+
+const FORMAT_ORDER: CloudinaryFormat[] = ["jxl", "avif", "webp"];
+const MIME_TYPES: Record<CloudinaryFormat, string> = {
+  jxl: "image/jxl",
+  avif: "image/avif",
+  webp: "image/webp",
+};
+
+const {
+  src,
+  alt,
+  width,
+  height,
+  sizes,
+thor3@Mac  % 
+
+
 ### 4. Reinstall and build (on Node 22)
 ```bash
 nvm use 22
